@@ -47,7 +47,8 @@ const TEXT = {
         ctlFull: 'полный экран', ctlStart: 'старт',
         buffTitle: 'УСИЛЕНИЯ', tipSpring: 'Пружина: мощный прыжок', tipBoots: 'Ботинки: прыжки выше, 10 с',
         tipShield: 'Щит: бессмертие 10 с (кроме пропасти)', tipRocket: 'Ракета: полёт высоко вверх',
-        tipStomp: 'Врагов давят прыжком сверху. Комбо даёт больше очков', tipCoin: 'Монеты тратятся на скины' },
+        tipStomp: 'Врагов давят прыжком сверху. Комбо даёт больше очков', tipCoin: 'Монеты тратятся на скины',
+        cloudOn: '☁ Прогресс сохранён в облаке Telegram' },
   en: { play: 'PLAY', best: 'Best', coins: 'Coins', again: 'AGAIN', menu: 'MENU', resume: 'RESUME',
         pauseT: 'PAUSED', over: 'GAME OVER', newRec: 'NEW RECORD!', runCoins: 'Coins this run',
         hintTouch: 'Drag your finger left and right', hintPc: 'Controls: A / D or ← →',
@@ -58,7 +59,8 @@ const TEXT = {
         ctlFull: 'fullscreen', ctlStart: 'start',
         buffTitle: 'POWER-UPS', tipSpring: 'Spring: big jump', tipBoots: 'Boots: higher jumps, 10 s',
         tipShield: 'Shield: invincible for 10 s (not vs. pits)', tipRocket: 'Rocket: fly way up',
-        tipStomp: 'Stomp enemies from above. Combos give more points', tipCoin: 'Coins are spent on skins' }
+        tipStomp: 'Stomp enemies from above. Combos give more points', tipCoin: 'Coins are spent on skins',
+        cloudOn: '☁ Progress saved to Telegram cloud' }
 };
 let langCode = 'en';
 try {
@@ -69,33 +71,170 @@ try {
 } catch (e) {}
 const t = (k) => TEXT[langCode][k];
 
-// ======================= STORAGE =======================
-const store = {
-  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-};
-let best = store.get('ij_best', 0);
-let totalCoins = store.get('ij_coins', 0);
-let sound = store.get('ij_sound', true);
-
 // ---- скины и цены ----
 // Замер: на карте ~7 монет на каждые 100 очков высоты (дальше больше), игрок берёт примерно половину,
 // плюс бонус 1 монета за каждые 50 очков. Забег на ~300 очков даёт ≈15 монет, короткий (50–150) — 4–8.
-// Первый скин — за 3–5 забегов, самый редкий («Череп») — за ~40 средних. Только внутриигровая валюта.
+// Первый скин — за 3–5 забегов, «Череп» — за ~40 средних, «Katana» (1000) — главная цель. Только внутриигровая валюта.
 const SKINS = [
-  { id: 'classic', price: 0,   name: { ru: 'Классик',    en: 'Classic' } },
-  { id: 'cat',     price: 40,  name: { ru: 'Кот',        en: 'Cat' } },
-  { id: 'robot',   price: 80,  name: { ru: 'Робот',      en: 'Robot' } },
-  { id: 'ninja',   price: 120, name: { ru: 'Ниндзя',     en: 'Ninja' } },
-  { id: 'astro',   price: 180, name: { ru: 'Космонавт',  en: 'Astronaut' } },
-  { id: 'ghost',   price: 250, name: { ru: 'Призрак',    en: 'Ghost' } },
-  { id: 'king',    price: 350, name: { ru: 'Король',     en: 'King' } },
-  { id: 'skull',   price: 600, name: { ru: 'Череп',      en: 'Skull' } }
+  { id: 'classic', price: 0,    name: { ru: 'Классик',    en: 'Classic' } },
+  { id: 'cat',     price: 40,   name: { ru: 'Кот',        en: 'Cat' } },
+  { id: 'robot',   price: 80,   name: { ru: 'Робот',      en: 'Robot' } },
+  { id: 'ninja',   price: 120,  name: { ru: 'Ниндзя',     en: 'Ninja' } },
+  { id: 'astro',   price: 180,  name: { ru: 'Космонавт',  en: 'Astronaut' } },
+  { id: 'ghost',   price: 250,  name: { ru: 'Призрак',    en: 'Ghost' } },
+  { id: 'king',    price: 350,  name: { ru: 'Король',     en: 'King' } },
+  { id: 'skull',   price: 600,  name: { ru: 'Череп',      en: 'Skull' } },
+  { id: 'katana',  price: 1000, name: { ru: 'Katana',     en: 'Katana' } }
 ];
-let owned = store.get('ij_owned', ['classic']);
-if (!Array.isArray(owned) || owned.indexOf('classic') < 0) owned = ['classic'].concat(Array.isArray(owned) ? owned : []);
-let skin = store.get('ij_skin', 'classic');
-if (owned.indexOf(skin) < 0 || !SKINS.some((s) => s.id === skin)) skin = 'classic';
+const SKIN_IDS = SKINS.map((k) => k.id);
+const priceOf = (id) => { const k = SKINS.find((q) => q.id === id); return k ? k.price : 0; };
+
+// ======================= SAVE (localStorage + облако Telegram) =======================
+// Прогресс хранится в двух местах: localStorage (мгновенно, работает офлайн) и CloudStorage Telegram
+// (привязано к аккаунту, переживает очистку кэша и переезд на другой телефон).
+//
+// Правила слияния (как у «счётчиков, которые только растут» — ничего не теряется):
+//   • рекорд — максимум;
+//   • заработанные монеты — у КАЖДОГО устройства свой счётчик, итог = сумма счётчиков;
+//   • купленные скины — объединение;
+//   • надетый скин и звук — как в более свежем сохранении.
+// Баланс = заработано − цена купленных скинов.
+// Перед каждой записью в облако игра сначала читает облако и объединяет (одно устройство не затирает другое).
+// Всё, что приходит из хранилищ, считается недоверенным и проходит через cleanSave().
+const SAVE_KEY = 'ij_save';      // ключ CloudStorage: только A-Z a-z 0-9 _ - ; значение до 4096 символов
+const SAVE_MAX = 4096;
+const ID_RE = /^[a-z0-9]{1,12}$/;
+const cloud = (tg && tgOk('6.9') && tg.CloudStorage) ? tg.CloudStorage : null;
+
+// случайный id этого устройства/установки (хранится локально)
+const DEV = (() => {
+  try {
+    let d = localStorage.getItem('ij_dev');
+    if (d && ID_RE.test(d)) return d;
+    d = Math.random().toString(36).slice(2, 10) || 'x1';
+    localStorage.setItem('ij_dev', d);
+    return d;
+  } catch (e) {}
+  return Math.random().toString(36).slice(2, 10) || 'x2';
+})();
+
+function safeParse(str) {
+  try { return (typeof str === 'string' && str.length > 0 && str.length <= SAVE_MAX) ? JSON.parse(str) : null; }
+  catch (e) { return null; }
+}
+const num = (v, max) => (typeof v === 'number' && isFinite(v) && v > 0) ? Math.min(Math.floor(v), max) : 0;
+function cleanSave(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  const ids = [];
+  if (Array.isArray(o.o)) {
+    for (const id of o.o) if (typeof id === 'string' && SKIN_IDS.indexOf(id) >= 0 && ids.indexOf(id) < 0) ids.push(id);
+  }
+  if (ids.indexOf('classic') < 0) ids.unshift('classic');
+  const e = Object.create(null);
+  if (o.e && typeof o.e === 'object' && !Array.isArray(o.e)) {
+    let n = 0;
+    for (const k of Object.keys(o.e)) {
+      if (n >= 60) break;
+      if (!ID_RE.test(k)) continue;
+      const v = num(o.e[k], 1e9);
+      if (v > 0) { e[k] = v; n++; }
+    }
+  }
+  return {
+    b: num(o.b, 1e7),                       // рекорд
+    e,                                      // заработано монет: { id устройства: счётчик }
+    o: ids,                                 // купленные скины
+    s: (typeof o.s === 'string' && ids.indexOf(o.s) >= 0) ? o.s : 'classic',   // надетый скин
+    m: o.m === 0 ? 0 : 1,                   // звук
+    t: num(o.t, 1e15)                       // время последнего сохранения
+  };
+}
+function mergeSaves(a, c) {
+  if (!a) return c;
+  if (!c) return a;
+  const o = a.o.slice();
+  for (const id of c.o) if (o.indexOf(id) < 0) o.push(id);
+  const e = Object.create(null);
+  for (const k in a.e) e[k] = a.e[k];
+  for (const k in c.e) e[k] = Math.max(e[k] || 0, c.e[k]);
+  const newer = a.t >= c.t ? a : c;
+  return { b: Math.max(a.b, c.b), e, o, s: o.indexOf(newer.s) >= 0 ? newer.s : 'classic', m: newer.m, t: Math.max(a.t, c.t) };
+}
+// сохранения старой версии игры (до облака): переносим один раз
+function legacySave() {
+  const g = (k) => { try { const v = localStorage.getItem(k); return v === null ? undefined : JSON.parse(v); } catch (e) { return undefined; } };
+  const lb = g('ij_best'), lc = g('ij_coins'), lo = g('ij_owned'), ls = g('ij_skin'), lm = g('ij_sound');
+  if (lb === undefined && lc === undefined && lo === undefined) return null;
+  const sv = cleanSave({ b: lb, o: lo, s: ls, m: lm === false ? 0 : 1, t: 1 });
+  const total = num(lc, 1e9) + sv.o.reduce((acc, id) => acc + priceOf(id), 0);   // заработано = баланс + потраченное
+  if (total > 0) sv.e[DEV] = total;
+  return sv;
+}
+
+let best = 0, ear = Object.create(null), owned = ['classic'], skin = 'classic', sound = true;
+let saveT = 0, saveTs = 0, cloudOk = false, cloudBusy = false, cloudDirty = false;
+const totalEarned = () => { let n = 0; for (const k in ear) n += ear[k]; return n; };
+const spent = () => owned.reduce((acc, id) => acc + priceOf(id), 0);
+const balance = () => Math.max(0, totalEarned() - spent());
+function applySave(sv) {
+  best = sv.b; ear = Object.create(null); for (const k in sv.e) ear[k] = sv.e[k];
+  owned = sv.o.slice(); skin = sv.s; sound = sv.m !== 0; saveTs = sv.t;
+}
+function snapshot() {
+  const e = {}; for (const k in ear) e[k] = ear[k];
+  return { v: 1, b: best, e, o: owned.slice(), s: skin, m: sound ? 1 : 0, t: saveTs };
+}
+
+(function loadLocal() {
+  let raw = null;
+  try { raw = localStorage.getItem(SAVE_KEY); } catch (e) {}
+  applySave(cleanSave(safeParse(raw)) || legacySave() || cleanSave({}));
+})();
+
+function writeLocal() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(snapshot())); } catch (e) {} }
+
+// читаем облако → объединяем с тем, что в памяти → пишем объединённое обратно. tries — повторы при ошибке чтения.
+function syncCloud(tries) {
+  if (!cloud) return;
+  if (cloudBusy) { cloudDirty = true; return; }
+  cloudBusy = true;
+  let fin = false;
+  const finish = () => {
+    if (fin) return; fin = true; clearTimeout(wd);
+    cloudBusy = false;
+    if (cloudDirty) { cloudDirty = false; syncCloud(0); }
+  };
+  const wd = setTimeout(finish, 8000);              // на случай, если Telegram так и не вызовет колбэк
+  try {
+    cloud.getItem(SAVE_KEY, (err, val) => {
+      if (err) {
+        cloudOk = false; finish();
+        if (tries > 0) setTimeout(() => syncCloud(tries - 1), 2500);
+        return;                                     // не смогли прочитать — не пишем вслепую, чтобы не затереть чужое
+      }
+      applySave(mergeSaves(snapshot(), cleanSave(safeParse(val))));
+      writeLocal();
+      refreshMenu();
+      if (state === 'shop') renderShop();
+      try {
+        cloud.setItem(SAVE_KEY, JSON.stringify(snapshot()), (err2, ok) => {
+          const was = cloudOk;
+          cloudOk = !err2 && !!ok;
+          if (cloudOk !== was) refreshMenu();
+          finish();
+        });
+      } catch (e) { finish(); }
+    });
+  } catch (e) { finish(); }
+}
+function saveNow() {
+  clearTimeout(saveT); saveT = 0;
+  saveTs = Date.now();
+  writeLocal();
+  syncCloud(0);
+}
+// now=true — сразу (покупка, конец забега); иначе с небольшой задержкой, чтобы не частить
+function save(now) { if (now) saveNow(); else if (!saveT) saveT = setTimeout(saveNow, 500); }
 
 // ======================= DOM =======================
 const $ = (s) => document.querySelector(s);
@@ -112,8 +251,9 @@ $('#hint').textContent = coarse ? t('hintTouch') : t('hintPc');
 if (!coarse) show($('#btnFull'));
 function refreshMenu() {
   $('#menuBest').textContent = best;
-  $('#menuCoins').textContent = totalCoins;
+  $('#menuCoins').textContent = balance();
   $('#btnSound').textContent = sound ? t('sndOn') : t('sndOff');
+  $('#cloudNote').textContent = cloudOk ? t('cloudOn') : '';
 }
 
 // ======================= RESIZE =======================
@@ -185,7 +325,7 @@ const hs = (a, b) => { const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; r
 function newGame() {
   G = {
     plats: [], items: [], enemies: [], parts: [], floats: [],
-    genY: 0, camY: -(H - 150), maxH: 0, bonus: 0, runCoins: 0, combo: 0,
+    genY: 0, camY: -(H - 150), maxH: 0, bonus: 0, runCoins: 0, combo: 0, paid: 0, bestStart: best,
     rowsSincePU: 99, prevSpecial: false, lastX: W / 2,
     stage: 0, prev: 0, fade: 1, bg: 255, shake: 0, t: 0, dieT: 0, tx: W / 2,
     p: { x: W / 2, y: -34, vx: 0, vy: -JUMP, face: 1, w: 30, h: 34, prevY: -34, boots: 0, shield: 0, rocket: 0, safe: 0 }
@@ -459,6 +599,7 @@ function update() {
     G.items = G.items.filter((it) => !it.taken && it.y < lim);
     G.enemies = G.enemies.filter((e) => e.y < lim);
   }
+  if (G.t % 600 === 0) bankRun(false);              // раз в 10 секунд подстраховка: монеты и рекорд не потеряются
   updateFx();
 
   // ---- падение в пропасть ----
@@ -479,7 +620,19 @@ function startGame() {
   drag = null;
   hide(elMenu); hide(elOver); hide(elPause); hide(elShop); show(btnPause);
 }
+// Зачисляет монеты и рекорд текущего забега. Безопасно вызывать сколько угодно раз:
+// зачисляется только то, что ещё не было зачислено (G.paid).
+function bankRun(now) {
+  if (!G) return;
+  const score = curScore();
+  const total = G.runCoins + Math.floor(score / 50);      // собранные монеты + бонус 1 за каждые 50 очков
+  let changed = false;
+  if (total > G.paid) { ear[DEV] = (ear[DEV] || 0) + (total - G.paid); G.paid = total; changed = true; }
+  if (score > best) { best = score; changed = true; }
+  if (changed) save(now);
+}
 function goMenu() {
+  if (state === 'play' || state === 'pause' || state === 'dying') bankRun(true);
   newGame();
   state = 'menu';
   drag = null;
@@ -503,20 +656,20 @@ function drawPreview(canvas, id) {
 function shopMsg(text) { $('#shopMsg').textContent = text || ''; }
 function buySkin(s) {
   if (owned.indexOf(s.id) >= 0) return;
-  if (totalCoins < s.price) { shopMsg(t('notEnough') + (s.price - totalCoins)); haptic('error'); return; }
-  totalCoins -= s.price;
-  owned.push(s.id); skin = s.id;
-  store.set('ij_coins', totalCoins); store.set('ij_owned', owned); store.set('ij_skin', skin);
+  const bal = balance();
+  if (bal < s.price) { shopMsg(t('notEnough') + (s.price - bal)); haptic('error'); return; }
+  owned.push(s.id); skin = s.id;                       // баланс пересчитается сам: заработано − цены скинов
+  save(true);
   shopMsg(''); sfx.power(); haptic('medium');
   renderShop();
 }
 function equipSkin(s) {
   if (owned.indexOf(s.id) < 0) return;
-  skin = s.id; store.set('ij_skin', skin); shopMsg(''); sfx.coin();
+  skin = s.id; save(true); shopMsg(''); sfx.coin();
   renderShop();
 }
 function renderShop() {
-  $('#shopCoins').textContent = totalCoins;
+  $('#shopCoins').textContent = balance();
   const grid = $('#shopGrid');
   grid.innerHTML = '';
   for (const s of SKINS) {
@@ -532,7 +685,7 @@ function renderShop() {
     else if (has) { b.textContent = t('equip'); b.className = 'cbtn'; b.addEventListener('click', () => equipSkin(s)); }
     else {
       b.textContent = '● ' + s.price;
-      b.className = 'cbtn buy' + (totalCoins < s.price ? ' dim' : '');
+      b.className = 'cbtn buy' + (balance() < s.price ? ' dim' : '');
       b.addEventListener('click', () => buySkin(s));
     }
     card.appendChild(pv); card.appendChild(nm); card.appendChild(b);
@@ -555,6 +708,7 @@ function toggleFull() {
 function pauseGame() {
   if (state !== 'play') return;
   state = 'pause'; drag = null;
+  bankRun(true);
   show(elPause);
 }
 function resumeGame() {
@@ -565,12 +719,10 @@ function resumeGame() {
 function endGame() {
   state = 'over';
   drag = null;
+  bankRun(true);
   const score = curScore();
-  const record = score > best;
-  if (record) { best = score; store.set('ij_best', best); }
+  const record = score > G.bestStart;
   const heightCoins = Math.floor(score / 50);        // бонус: 1 монета за каждые 50 очков
-  totalCoins += G.runCoins + heightCoins;
-  store.set('ij_coins', totalCoins);
   $('#overScore').textContent = score;
   $('#overBest').textContent = best;
   $('#overCoins').textContent = G.runCoins + (heightCoins ? ' (+' + heightCoins + ' ' + t('heightBonus') + ')' : '');
@@ -585,7 +737,7 @@ $('#btnMenu2').addEventListener('click', goMenu);
 $('#btnResume').addEventListener('click', resumeGame);
 btnPause.addEventListener('click', pauseGame);
 $('#btnSound').addEventListener('click', () => {
-  sound = !sound; store.set('ij_sound', sound); refreshMenu();
+  sound = !sound; save(true); refreshMenu();
   if (sound) { audio(); sfx.coin(); }
 });
 $('#btnShop').addEventListener('click', openShop);
@@ -594,8 +746,10 @@ $('#btnShopBack').addEventListener('click', goMenu);
 $('#btnFull').addEventListener('click', toggleFull);
 // при потере фокуса отпускаем клавиши (иначе герой «залипает») и ставим паузу
 const releaseKeys = () => { keys.l = 0; keys.r = 0; };
-document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseKeys(); pauseGame(); } });
+const inRun = () => state === 'play' || state === 'pause' || state === 'dying';
+document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseKeys(); if (inRun()) bankRun(true); pauseGame(); } });
 window.addEventListener('blur', () => { releaseKeys(); pauseGame(); });
+window.addEventListener('pagehide', () => { if (inRun()) bankRun(true); });   // закрыли приложение посреди забега
 
 // ======================= INPUT =======================
 // Телефон: палец «тянет» героя (относительное перетаскивание — без рывков).
@@ -621,7 +775,8 @@ window.addEventListener('keydown', (e) => {
   if (c === 'KeyA' || c === 'ArrowLeft') { keys.l = 1; e.preventDefault(); }
   else if (c === 'KeyD' || c === 'ArrowRight') { keys.r = 1; e.preventDefault(); }
   else if (c === 'Space' || c === 'Enter') {
-    if (state === 'menu' || state === 'over') { e.preventDefault(); startGame(); }
+    const onBtn = e.target && e.target.tagName === 'BUTTON';
+    if (!onBtn && (state === 'menu' || state === 'over')) { e.preventDefault(); startGame(); }
   } else if (c === 'KeyP' || c === 'Escape') {
     if (state === 'play') pauseGame(); else if (state === 'pause') resumeGame(); else if (state === 'shop') goMenu();
   } else if (c === 'KeyF' && !e.ctrlKey && !e.metaKey) {
@@ -865,6 +1020,43 @@ function drawSkin(sk, x, y, f) {
       ctx.lineTo(x + 5, y - 2); ctx.lineTo(x + 11, y - 7); ctx.lineTo(x + 9, y + 4);
       ctx.closePath(); ctx.fill();
       break;
+    case 'katana': {
+      // два хвостика (рисуем ПОД телом, чтобы росли из-за головы) — слегка качаются
+      const sw = Math.sin(G.t * 0.18) * 2.2;
+      ctx.fillStyle = INK;
+      for (const sd of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(x + sd * 10, y + 5);
+        ctx.quadraticCurveTo(x + sd * 26 + sw, y + 8, x + sd * 20 + sw, y + 29);
+        ctx.quadraticCurveTo(x + sd * 14 + sw, y + 17, x + sd * 10, y + 12);
+        ctx.closePath(); ctx.fill();
+      }
+      bodyShape(x, y, 10);
+      // чёлка и боковые пряди — заливаем верх головы внутри контура тела
+      ctx.save();
+      rr(x - 13, y + 2, 26, 28, 10); ctx.clip();
+      ctx.fillStyle = INK;
+      ctx.beginPath();
+      ctx.moveTo(x - 15, y); ctx.lineTo(x + 15, y); ctx.lineTo(x + 15, y + 8);
+      for (let i = 0; i < 4; i++) { const x1 = x + 15 - i * 7.5; ctx.quadraticCurveTo(x1 - 3.75, y + 14, x1 - 7.5, y + 8); }
+      ctx.closePath(); ctx.fill();
+      ctx.fillRect(x - 13, y + 2, 3.4, 10); ctx.fillRect(x + 9.6, y + 2, 3.4, 10);
+      ctx.restore();
+      // резинки на хвостиках
+      ctx.fillStyle = BG; ctx.lineWidth = 2;
+      for (const sd of [-1, 1]) { ctx.beginPath(); ctx.arc(x + sd * 14, y + 9, 2.6, 0, 6.2832); ctx.fill(); ctx.stroke(); }
+      // глаза ниже чёлки, с ресничками
+      ctx.fillStyle = INK;
+      const ex1 = x + f * 3 - 5, ex2 = x + f * 3 + 5;
+      dot(ex1, y + 17, 2.4); dot(ex2, y + 17, 2.4);
+      ctx.lineWidth = 1.8; ctx.beginPath();
+      ctx.moveTo(ex1 - 2.4, y + 15.5); ctx.lineTo(ex1 - 5, y + 13.8);
+      ctx.moveTo(ex2 + 2.4, y + 15.5); ctx.lineTo(ex2 + 5, y + 13.8);
+      ctx.stroke();
+      // маленькая улыбка вместо клюва (клюв сливался бы с хвостиком)
+      ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x + f * 3, y + 20, 3.4, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+      break;
+    }
     case 'skull':
       bodyShape(x, y, 11);
       oval(x - 5, y + 13, 3.6, 4.4); oval(x + 5, y + 13, 3.6, 4.4);
@@ -1005,5 +1197,6 @@ function frame(now) {
 resize();
 newGame();
 refreshMenu();
+syncCloud(2);                                   // подтягиваем и объединяем облачное сохранение (2 повтора при ошибке)
 requestAnimationFrame(frame);
 })();
